@@ -1,0 +1,354 @@
+<html>
+  <head>
+      <link
+        href="/css/style.css"
+        type="text/css"
+        rel="stylesheet" />
+      <link
+        href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/3.5.1/animate.min.css"
+        type="text/css"
+        rel="stylesheet" />
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/react/0.14.6/react.js">
+      </script>
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/react/0.14.6/react-dom.js">
+      </script>
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-core/5.8.23/browser.min.js">
+      </script>
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.11.1/moment.min.js">
+      </script>
+      <script>
+        var  MIN_LAT_SMALL = 51.444145;
+        var  MIN_LNG_SMALL = -2.59808;
+        var  MAX_LAT_SMALL = 51.455093;
+        var  MAX_LNG_SMALL = -2.575545;
+        var map;
+        var stopId = '0100BRP90325';
+        var stopMarkers = [];
+        var tripLines = [];
+        function getResource(resourcePath, callback) {
+          var request = new XMLHttpRequest();
+          request.open('GET', '/api' + resourcePath, true);
+          request.onload = function() {
+            if (request.status >= 200 && request.status < 400) {
+              callback(JSON.parse(request.responseText));
+            } 
+          };
+          request.send();
+        }
+        function getStops(stopIds, callback) {
+          getResource('/stops/' + stopIds.join(), callback)
+        }
+        function getStop(stopId, callback) {
+          getStops([stopId], function(stops) {
+            callback(stops[0]);
+          });
+        }
+        function getSamples(stopId, callback) {
+          getResource('/samples/' + stopId, callback);
+        }
+        function getTripStopCalls(tripId, callback) {
+          var resourcePath = '/trips/' + tripId + '/stopCalls';
+          getResource(resourcePath, callback);
+        }
+        function stopMarker(map, stop) {
+          return new google.maps.Marker({
+            position: {
+              lat: stop.lat,
+              lng: stop.lng
+            },
+            title: stop.stopId + ' - ' + stop.name,
+            map: map
+          });
+        }
+        function tripMarkers(map, stopCalls) {
+          return stopCalls.map(function(stopCall) {
+            return new google.maps.Marker({
+              position: {
+                lat: stopCall.lat,
+                lng: stopCall.lng
+              },
+              map: map
+            });
+          });
+        }
+        function tripLine(map, tripStopCalls) {
+          return new google.maps.Polyline({
+            path: tripStopCalls.map(function(stopCall) {
+              return {
+                lat: stopCall.lat,
+                lng: stopCall.lng
+              };
+            }),
+            map: map
+          });
+        }
+        function initMap() {
+          map = new google.maps.Map(document.getElementById('map-0'), {
+            center: {
+              lat: (MIN_LAT_SMALL + MAX_LAT_SMALL) / 2.0,
+              lng: (MIN_LNG_SMALL + MAX_LNG_SMALL) / 2.0
+            },
+            zoom: 14
+          });
+        }
+      </script>
+      <script defer 
+            src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBRiflueRgxOVXBKf2d1r70Q59YeMrG1lA&callback=initMap">
+      </script>
+  </head>
+  <body>
+    <section
+      id="map-0"
+      class="map">
+    </section>
+    <section
+      class="stop"
+      id="stop-0">
+    </section>
+    <script type="text/babel">
+      var Sample = React.createClass({
+        getInitialState: function() {
+          var timestamp = this.props.timestamp;
+          var timestampFromNow = Math.round((Date.now() - timestamp) / 1000);
+          return {
+            interval: null,
+            timestampFromNow: timestampFromNow
+          };
+        },
+        componentDidMount: function() {
+          this.setState({
+            interval: setInterval(this.updateFromNow, 1000)
+          });
+        },
+        componentWillUnmount: function() {
+          clearInterval(this.state.interval);
+        },
+        updateFromNow: function() {
+          var timestamp = this.props.timestamp;
+          var timestampFromNow = Math.round((Date.now() - timestamp) / 1000);
+          this.setState({ timestampFromNow: timestampFromNow });
+        },
+        render: function() {
+          var expectedArrivalTime = this.props.expectedArrivalTime;
+          var diff = (expectedArrivalTime - this.props.scheduledArrivalTime) / 1000;
+          var diffNode;
+          if (diff > 0) {
+            diffNode = (
+              <span className="red">+{diff}s</span>
+            );
+          } else {
+            diffNode = (
+              <span className="green">{diff}s</span>
+            );
+          }
+          return (
+            <span>
+              {moment(expectedArrivalTime).format('HH:mm:ss')} ({diffNode})
+              <span className="time">{this.state.timestampFromNow}s ago</span>
+            </span>
+          );
+        }
+      });
+      var SampleList = React.createClass({
+        render: function() {
+          var samples = this.props.data;
+          var sampleNodes = this.props.data.map(function(sample) {
+            return (
+              <li
+                className="animated fadeIn"
+                key={sample.timestamp}>
+                <Sample
+                  expectedArrivalTime={sample.expectedArrivalTime}
+                  scheduledArrivalTime={sample.scheduledArrivalTime}
+                  timestamp={sample.timestamp} />
+              </li>
+            );
+          }).reverse();
+          return (
+            <ul>
+              {sampleNodes}
+            </ul>
+          );
+        }
+      });
+      var Trip = React.createClass({
+        getInitialState: function() {
+          return {
+            tripLine: null,
+            stopCalls: [],
+            samples: this.props.samples,
+            timeNow: Date.now()
+          };
+        },
+        componentDidMount: function() {
+          var interval = setInterval(this.updateSamples, 1000);
+          var timeNow = Date.now();
+          getTripStopCalls(this.props.tripId, function(stopCalls) {
+            this.setState({
+              tripLine: tripLine(map, stopCalls),
+              stopCalls: stopCalls,
+              interval: interval,
+              timeNow: timeNow
+            });
+            map.setZoom(13);
+          }.bind(this));
+        },
+        componentWillUnmount: function() {
+          clearInterval(this.state.interval);
+          this.state.tripLine.setMap(null);
+          this.setState({
+            tripLine: null,
+          });
+          map.setZoom(14);
+        },
+        updateSamples: function() {
+          getSamples(this.props.stopId, function(samples) {
+            console.log(samples);
+            var tripSamples = samples.reduce(function(memo, trip) {
+              if (trip.tripId == this.props.tripId) {
+                console.log('found trip');
+                return trip.samples;
+              }
+              return memo;
+            }.bind(this))
+            var timeNow = Date.now();
+            this.setState({
+              samples: tripSamples,
+              timeNow: timeNow
+            });
+          }.bind(this));
+        },
+        render: function() {
+          var scheduled = moment.unix(this.props.scheduledArrivalTime / 1000);
+          var timeNow = moment.unix(this.state.timeNow / 1000)
+          return (
+            <section className="trip">
+              <h3>Time Now: {timeNow.format('HH:mm:ss')}</h3>
+              <h3>Scheduled: {scheduled.format('HH:mm:ss')}</h3>
+              <h3>Expected:</h3>
+              <SampleList data={this.state.samples}/>
+            </section>
+          );
+        }
+      });
+      var TripSummary = React.createClass({
+        render: function() {
+          var scheduledArrival = moment.unix(
+            this.props.scheduledArrivalTime / 1000
+          );
+          return (
+            <span className="trip">
+               {this.props.lineName} - {this.props.headsign}  ({this.props.tripId})
+               <span className="time">{scheduledArrival.format('HH:mm')}</span>
+            </span>
+          );
+        }
+      });
+      var TripList = React.createClass({
+       render: function() {
+          var tripNodes = this.props.data.map(function(trip) {
+            var tripId  = trip.tripId;
+            var onClick = function() {
+              this.props.selectTrip(trip);
+            }.bind(this);
+            return (
+              <li 
+                key={tripId}
+                onClick={onClick}>
+                <h3>
+                  <TripSummary
+                    headsign={trip.headsign}
+                    lineName={trip.lineName}
+                    tripId={trip.tripId}
+                    scheduledArrivalTime={trip.scheduledArrivalTime} />
+                </h3>
+              </li>
+            );
+          }.bind(this));
+          return (
+            <ul>
+              {tripNodes}
+            </ul>
+          );
+        }
+      });
+      var Stop = React.createClass({
+        getInitialState: function() {
+          return {
+            tripId: false
+          };
+        },
+        componentDidMount: function() {
+          getStop(this.props.stopId, function(stop) {
+            this.setState({
+             stop: stop,
+             stopMarker: stopMarker(map, stop)
+           });
+          }.bind(this));
+          getSamples(this.props.stopId, function(trips) {
+            this.setState({
+              trips: trips
+            });
+          }.bind(this));
+        },
+        selectTrip: function(trip) {
+          console.log('select trip');
+          this.setState({
+            selectedTrip: trip
+          });
+        },
+        render: function() {
+          if (!this.state.stop) {
+            return null;
+          }
+          var stopHeadingNode = (
+              <span
+                className="stop"
+                onClick={function() {this.selectTrip(null) }.bind(this)}>
+                {this.state.stop.name}
+              </span>
+          );
+          if (!this.state.trips) {
+            return stopHeadingNode;
+          }
+          if (!this.state.selectedTrip) {
+            return (
+              <div>
+                <h2>{stopHeadingNode}</h2>
+                <TripList 
+                  selectTrip={this.selectTrip}
+                  data={this.state.trips} />
+              </div>
+            );
+          } else {
+            var selectedTrip = this.state.selectedTrip;
+            return (
+              <div>
+                <h2>
+                  {stopHeadingNode}
+                  <TripSummary
+                    headsign={selectedTrip.headsign}
+                    lineName={selectedTrip.lineName}
+                    tripId={selectedTrip.tripId}
+                    scheduledArrivalTime={selectedTrip.scheduledArrivalTime} />
+                </h2>
+                <Trip
+                  tripId={selectedTrip.tripId}
+                  stopId={this.props.stopId}
+                  scheduledArrivalTime={selectedTrip.scheduledArrivalTime}
+                  samples={selectedTrip.samples} />
+              </div>
+            );
+          }
+        }
+      });
+      function initReact() {
+        ReactDOM.render(
+          <Stop stopId="0100BRP90325" />,
+          document.getElementById('stop-0')
+        );
+      }
+      initReact();
+    </script>
+  </body>
+</html>
